@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable, Optional, Self
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -393,6 +394,23 @@ async def http_exception_handler(
     )
     return JSONResponse(
         status_code=exc.status_code,
+        content=problem.model_dump()
+    )
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(
+    request: Request,
+    exc: RequestValidationError
+) -> JSONResponse:
+    """Handle request validation errors."""
+    problem = JSONProblem(
+        status=str(const.HTTP_422_UNPROCESSABLE_ENTITY),
+        title="Unprocessable Entity",
+        detail=str(exc.errors()),
+        type=f"https://http.cat/{const.HTTP_422_UNPROCESSABLE_ENTITY}"
+    )
+    return JSONResponse(
+        status_code=const.HTTP_422_UNPROCESSABLE_ENTITY,
         content=problem.model_dump()
     )
 
