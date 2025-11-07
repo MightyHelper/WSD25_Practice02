@@ -7,3 +7,9 @@ requires-python = ">=3.13"
 dependencies = [
     "fastapi[standard]>=0.121.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pygments==2.19.0",
+    "pytest>=8.4.2",
+]

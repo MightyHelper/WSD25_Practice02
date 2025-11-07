@@ -21,13 +21,13 @@ HTTP_405_METHOD_NOT_ALLOWED: Final[int] = 405
 HTTP_409_CONFLICT: Final[int] = 409
 HTTP_418_IM_A_TEAPOT: Final[int] = 418
 HTTP_420_ENHANCE_YOUR_CALM: Final[int] = 420
-HTTP_422_UNPROCESSABLE_ENTITY: Final[int] = 422
+HTTP_422_UNPROCESSABLE_CONTENT: Final[int] = 422
 HTTP_429_TOO_MANY_REQUESTS: Final[int] = 429
 HTTP_500_INTERNAL_SERVER_ERROR: Final[int] = 500
 HTTP_501_NOT_IMPLEMENTED: Final[int] = 501
 
 # Error messages
-ERROR_METHOD_NOT_ALLOWED: Final[str] = "Method not allowed"
+ERROR_METHOD_NOT_ALLOWED: Final[str] = "Method Not Allowed"
 ERROR_RATE_LIMIT_EXCEEDED: Final[str] = "Rate limit exceeded"
 ERROR_BLACKLISTED_IP: Final[str] = "This IP is temporarily blacklisted"
 ERROR_NUMBER_TOO_LARGE: Final[str] = "Number is too large for current payment plan. Do you think electricity is free?"
