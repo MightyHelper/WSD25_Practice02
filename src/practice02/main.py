@@ -1,16 +1,19 @@
 import logging
 import math
 import time
-from typing import Optional, Set
+from typing import Any, Callable, Optional, Self
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
+
+from . import constants as const
 
 # In-memory storage
-motd: Optional[str] = None
-special_numbers: Set[int] = set()
+motd: Optional[str] = const.DEFAULT_MOTD
+special_numbers: set[int] = set()
 
 # Rate limiting storage
 request_timestamps: dict[str, list[float]] = {}
@@ -22,67 +25,109 @@ logging.basicConfig(
     format='[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
 
 # Custom exceptions
+
 class APIError(Exception):
+    """Base class for API errors."""
     status_code: int
     title: str
     detail: str
     
-    def __init__(self, status_code: int, title: str, detail: str):
+    def __init__(self, status_code: int, title: str, detail: str) -> None:
         self.status_code = status_code
         self.title = title
         self.detail = detail
         super().__init__(detail)
 
 class NumberTooLargeError(APIError):
-    def __init__(self, detail: str):
-        super().__init__(402, "Payment Required", detail)
+    """Raised when a number exceeds the allowed limit."""
+    def __init__(self, detail: str = const.ERROR_NUMBER_TOO_LARGE) -> None:
+        super().__init__(const.HTTP_402_PAYMENT_REQUIRED, "Payment Required", detail)
 
 class NumberNotIntegerError(APIError):
-    def __init__(self, detail: str):
-        super().__init__(422, "Unprocessable Entity", detail)
+    """Raised when a non-integer value is provided where an integer is expected."""
+    def __init__(self, detail: str = const.ERROR_VALIDATION) -> None:
+        super().__init__(const.HTTP_422_UNPROCESSABLE_ENTITY, "Unprocessable Entity", detail)
 
 class ResourceExistsError(APIError):
-    def __init__(self, resource: str):
-        super().__init__(409, "Conflict", f"{resource} already exists")
+    """Raised when trying to create a resource that already exists."""
+    def __init__(self, resource: str) -> None:
+        super().__init__(const.HTTP_409_CONFLICT, "Conflict", f"{resource} already exists")
 
 class ResourceNotFoundError(APIError):
-    def __init__(self, resource: str):
-        super().__init__(404, "Not Found", f"{resource} not found")
+    """Raised when a requested resource is not found."""
+    def __init__(self, resource: str) -> None:
+        super().__init__(const.HTTP_404_NOT_FOUND, "Not Found", f"{resource} not found")
 
 class MethodNotAllowedError(APIError):
-    def __init__(self, method: str):
-        super().__init__(405, "Method Not Allowed", f"{method} method not allowed")
+    """Raised when an unsupported HTTP method is used."""
+    def __init__(self, method: str) -> None:
+        super().__init__(
+            const.HTTP_405_METHOD_NOT_ALLOWED, 
+            "Method Not Allowed", 
+            f"{method} method not allowed"
+        )
 
 class RateLimitExceededError(APIError):
-    def __init__(self, retry_after: int):
-        super().__init__(429, "Too Many Requests", "Rate limit exceeded")
+    """Raised when the rate limit is exceeded."""
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(
+            const.HTTP_429_TOO_MANY_REQUESTS,
+            "Too Many Requests",
+            const.ERROR_RATE_LIMIT_EXCEEDED
+        )
         self.retry_after = retry_after
 
 class EnhanceYourCalmError(APIError):
-    def __init__(self):
-        super().__init__(420, "Enhance Your Calm", "You are being rate limited")
+    """Raised when requests are coming in too quickly."""
+    def __init__(self) -> None:
+        super().__init__(
+            const.HTTP_420_ENHANCE_YOUR_CALM,
+            "Enhance Your Calm",
+            "You are being rate limited"
+        )
 
 class TeapotError(APIError):
-    def __init__(self):
-        super().__init__(418, "I'm a teapot", "This IP is temporarily blacklisted")
+    """Raised when an IP is blacklisted."""
+    def __init__(self) -> None:
+        super().__init__(
+            const.HTTP_418_IM_A_TEAPOT,
+            "I'm a teapot",
+            const.ERROR_BLACKLISTED_IP
+        )
 
 # Response Models
 
 class APIResponse[T](BaseModel):
+    """Standard API response format."""
     status: str
     data: T
+    
+    @classmethod
+    def success(cls, data: T, status_code: int = const.HTTP_200_OK) -> Self:
+        """Create a successful API response."""
+        return cls(status=str(status_code), data=data)
+    
+    @classmethod
+    def error(cls, error: APIError) -> Self:
+        """Create an error API response."""
+        return cls(
+            status=str(error.status_code),
+            data={"error": error.detail}
+        )
 
 class JSONProblem(BaseModel):
+    """Standard error response format following RFC 7807."""
     status: str
     title: str
     detail: str
-    type: str
+    type: str = "about:blank"
     
     @classmethod
     def from_exception(cls, exc: Exception) -> 'JSONProblem':
+        """Create a JSON problem from an exception."""
         if isinstance(exc, APIError):
             return cls(
                 status=str(exc.status_code),
@@ -91,145 +136,243 @@ class JSONProblem(BaseModel):
                 type=f"https://http.cat/{exc.status_code}"
             )
         return cls(
-            status="500",
+            status=str(const.HTTP_500_INTERNAL_SERVER_ERROR),
             title="Internal Server Error",
-            detail="An unexpected error occurred",
+            detail=const.ERROR_INTERNAL_SERVER,
             type="https://http.cat/500"
         )
 
 # Request Models
 class MOTDUpdate(BaseModel):
-    message: str = Field(..., min_length=1, max_length=100)
+    """Model for updating the Message of the Day."""
+    message: str = Field(
+        ...,
+        min_length=const.MOTD_MIN_LENGTH,
+        max_length=const.MOTD_MAX_LENGTH,
+        description="The message to display as the Message of the Day"
+    )
 
 class NumberRequest(BaseModel):
-    number: int
+    """Base model for number-based requests."""
+    number: int = Field(..., gt=0, description="A positive integer")
     
     @field_validator('number')
     @classmethod
-    def number_must_be_positive(cls, v):
+    def validate_number(cls, v: int) -> int:
+        """Validate that the number is positive."""
         if v <= 0:
             raise ValueError('Number must be positive')
         return v
 
-class PrimeCheckRequest(BaseModel):
-    number: int
+class PrimeCheckRequest(NumberRequest):
+    """Model for prime number check requests."""
     
     @field_validator('number')
     @classmethod
-    def number_must_be_positive(cls, v):
-        if v <= 0:
-            raise ValueError('Number must be positive')
+    def validate_number_size(cls, v: int) -> int:
+        """Validate that the number is within the allowed range."""
+        if v > const.PRIME_NUMBER_MAX:
+            raise NumberTooLargeError()
         return v
 
 # Middleware
 class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        client_host = request.client.host if request.client else "unknown"
-        logger.info(f"{client_host} - {request.method} {request.url.path}")
+    """Middleware for logging HTTP requests and responses."""
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Process the request and log relevant information."""
+        client_host: str = request.client.host if request.client else "unknown"
+        logger.info("%s - %s %s", client_host, request.method, request.url.path)
         
-        start_time = time.time()
+        start_time: float = time.time()
         try:
-            response = await call_next(request)
-            process_time = (time.time() - start_time) * 1000
-            logger.info(f"{client_host} - {request.method} {request.url.path} - {response.status_code} - {process_time:.2f}ms")
+            response: Response = await call_next(request)
+            process_time: float = (time.time() - start_time) * 1000
+            logger.info(
+                "%s - %s %s - %d - %.2fms",
+                client_host,
+                request.method,
+                request.url.path,
+                response.status_code,
+                process_time
+            )
             return response
         except Exception as e:
-            logger.error(f"Error processing request: {str(e)}", exc_info=True)
+            logger.error("Error processing request: %s", str(e), exc_info=True)
             raise
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        client_ip = request.client.host if request.client else "unknown"
-        current_time = time.time()
+    """Middleware for rate limiting requests."""
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        """Process the request with rate limiting."""
+        client_ip: str = request.client.host if request.client else "unknown"
+        current_time: float = time.time()
         
         # Clean up old blacklisted IPs
-        expired_ips = [ip for ip, expiry in blacklisted_ips.items() if expiry < current_time]
-        for ip in expired_ips:
-            del blacklisted_ips[ip]
+        self._cleanup_blacklisted_ips(current_time)
         
         # Check if IP is blacklisted
         if client_ip in blacklisted_ips:
-            return JSONResponse(
-                status_code=418,
-                content=JSONProblem(
-                    status="418",
-                    title="I'm a teapot",
-                    detail="This IP is temporarily blacklisted",
-                    type="https://http.cat/418"
-                ).model_dump()
-            )
+            return self._blacklisted_response()
         
         # Initialize request timestamps for this IP
         if client_ip not in request_timestamps:
             request_timestamps[client_ip] = []
         
-        # Check rate limits
-        timestamps = request_timestamps[client_ip]
-        one_second_ago = current_time - 1
-        ten_seconds_ago = current_time - 10
-        
-        # Remove timestamps older than 1 second
-        timestamps = [ts for ts in timestamps if ts > one_second_ago]
-        
-        # Check for too many requests (more than 100 in 1 second)
-        if len(timestamps) >= 100:
-            blacklisted_ips[client_ip] = current_time + 10  # Blacklist for 10 seconds
-            return JSONResponse(
-                status_code=429,
-                headers={"Retry-After": "10"},
-                content=JSONProblem(
-                    status="429",
-                    title="Too Many Requests",
-                    detail="Rate limit exceeded. You have been blacklisted for 10 seconds.",
-                    type="https://http.cat/429"
-                ).model_dump()
-            )
-        
-        # Check for too frequent requests (less than 0.1s between requests)
-        if len(timestamps) > 0 and (current_time - timestamps[-1]) < 0.1:
-            return JSONResponse(
-                status_code=420,
-                content=JSONProblem(
-                    status="420",
-                    title="Enhance Your Calm",
-                    detail="You are being rate limited",
-                    type="https://http.cat/420"
-                ).model_dump()
-            )
-        
-        # Check standard rate limit (1 request per second)
-        if len(timestamps) >= 1:
-            retry_after = 1 - (current_time - timestamps[0])
-            if retry_after > 0:
-                return JSONResponse(
-                    status_code=429,
-                    headers={"Retry-After": str(int(retry_after) + 1)},
-                    content=JSONProblem(
-                        status="429",
-                        title="Too Many Requests",
-                        detail=f"Rate limit exceeded. Try again in {int(retry_after) + 1} seconds.",
-                        type="https://http.cat/429"
-                    ).model_dump()
-                )
-        
-        # Update timestamps
-        timestamps.append(current_time)
-        request_timestamps[client_ip] = timestamps[-100:]  # Keep only the last 100 timestamps
-        
-        # Process the request
-        response = await call_next(request)
+        # Process rate limiting
+        response = await self._process_rate_limit(client_ip, current_time, request, call_next)
         return response
+    
+    @staticmethod
+    def _cleanup_blacklisted_ips(current_time: float) -> None:
+        """Remove expired IPs from the blacklist."""
+        expired_ips = [
+            ip for ip, expiry in blacklisted_ips.items()
+            if expiry < current_time
+        ]
+        for ip in expired_ips:
+            del blacklisted_ips[ip]
+    
+    @staticmethod
+    def _blacklisted_response() -> JSONResponse:
+        """Create a response for blacklisted IPs."""
+        return JSONResponse(
+            status_code=const.HTTP_418_IM_A_TEAPOT,
+            content=JSONProblem(
+                status=str(const.HTTP_418_IM_A_TEAPOT),
+                title="I'm a teapot",
+                detail=const.ERROR_BLACKLISTED_IP,
+                type=f"https://http.cat/{const.HTTP_418_IM_A_TEAPOT}"
+            ).model_dump()
+        )
+    
+    async def _process_rate_limit(
+        self,
+        client_ip: str,
+        current_time: float,
+        request: Request,
+        call_next: Callable
+    ) -> Response:
+        """Process rate limiting for the request."""
+        timestamps = request_timestamps[client_ip]
+        window_start = current_time - const.RATE_LIMIT_WINDOW_SECONDS
+        
+        # Remove old timestamps outside the current window
+        recent_timestamps = [ts for ts in timestamps if ts > window_start]
+        
+        # Check for too many requests
+        if len(recent_timestamps) >= const.RATE_LIMIT_MAX_REQUESTS:
+            return self._handle_rate_limit_exceeded(client_ip, current_time)
+        
+        # Check for too frequent requests
+        if self._is_too_frequent(recent_timestamps, current_time):
+            return self._enhance_your_calm_response()
+        
+        # Check standard rate limit
+        if recent_timestamps:
+            response = self._check_standard_rate_limit(
+                recent_timestamps[0],
+                current_time
+            )
+            if response:
+                return response
+        
+        # Update timestamps and process the request
+        recent_timestamps.append(current_time)
+        request_timestamps[client_ip] = recent_timestamps[-const.MAX_TIMESTAMPS_STORED:]
+        
+        return await call_next(request)
+    
+    @staticmethod
+    def _is_too_frequent(timestamps: list[float], current_time: float) -> bool:
+        """Check if requests are coming in too quickly."""
+        return (
+            len(timestamps) > 0 and
+            (current_time - timestamps[-1]) < const.RATE_LIMIT_MIN_INTERVAL
+        )
+    
+    @staticmethod
+    def _enhance_your_calm_response() -> JSONResponse:
+        """Create a 420 Enhance Your Calm response."""
+        return JSONResponse(
+            status_code=const.HTTP_420_ENHANCE_YOUR_CALM,
+            content=JSONProblem(
+                status=str(const.HTTP_420_ENHANCE_YOUR_CALM),
+                title="Enhance Your Calm",
+                detail="You are being rate limited",
+                type=f"https://http.cat/{const.HTTP_420_ENHANCE_YOUR_CALM}"
+            ).model_dump()
+        )
+    
+    @staticmethod
+    def _handle_rate_limit_exceeded(
+            client_ip: str,
+        current_time: float
+    ) -> JSONResponse:
+        """Handle rate limit exceeded by blacklisting the IP."""
+        blacklisted_ips[client_ip] = current_time + const.BLACKLIST_DURATION
+        return JSONResponse(
+            status_code=const.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": str(int(const.BLACKLIST_DURATION))},
+            content=JSONProblem(
+                status=str(const.HTTP_429_TOO_MANY_REQUESTS),
+                title="Too Many Requests",
+                detail=(
+                    f"Rate limit exceeded. You have been blacklisted for "
+                    f"{int(const.BLACKLIST_DURATION)} seconds."
+                ),
+                type=f"https://http.cat/{const.HTTP_429_TOO_MANY_REQUESTS}"
+            ).model_dump()
+        )
+    
+    @staticmethod
+    def _check_standard_rate_limit(
+            first_timestamp: float,
+        current_time: float
+    ) -> Optional[JSONResponse]:
+        """Check standard rate limit (1 request per second)."""
+        time_since_first = current_time - first_timestamp
+        
+        if time_since_first < const.RATE_LIMIT_WINDOW_SECONDS:
+            retry_after = int(const.RATE_LIMIT_WINDOW_SECONDS - time_since_first) + 1
+            return JSONResponse(
+                status_code=const.HTTP_429_TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(retry_after)},
+                content=JSONProblem(
+                    status=str(const.HTTP_429_TOO_MANY_REQUESTS),
+                    title="Too Many Requests",
+                    detail=(
+                        f"Rate limit exceeded. Try again in {retry_after} seconds."
+                    ),
+                    type=f"https://http.cat/{const.HTTP_429_TOO_MANY_REQUESTS}"
+                ).model_dump()
+            )
+        return None
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    final_app = FastAPI(
+        title=const.API_TITLE,
+        description=const.API_DESCRIPTION,
+        version=const.API_VERSION,
+        docs_url="/docs",
+        redoc_url="/redoc"
+    )
+    
+    # Add middleware
+    final_app.add_middleware(LoggingMiddleware)
+    final_app.add_middleware(RateLimitMiddleware)
+    
+    return final_app
 
 # Initialize FastAPI app
-app = FastAPI()
-
-# Add middleware
-app.add_middleware(LoggingMiddleware)
-app.add_middleware(RateLimitMiddleware)
+app = create_app()
 
 # Exception handlers
 @app.exception_handler(APIError)
-async def api_error_handler(request: Request, exc: APIError):
+async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+    """Handle API errors."""
     problem = JSONProblem.from_exception(exc)
     return JSONResponse(
         status_code=exc.status_code,
@@ -237,7 +380,11 @@ async def api_error_handler(request: Request, exc: APIError):
     )
 
 @app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
+async def http_exception_handler(
+    request: Request,
+    exc: HTTPException
+) -> JSONResponse:
+    """Handle HTTP exceptions."""
     problem = JSONProblem(
         status=str(exc.status_code),
         title=exc.detail,
@@ -250,176 +397,390 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     )
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {str(exc)}", exc_info=True)
+async def global_exception_handler(
+    request: Request,
+    exc: Exception
+) -> JSONResponse:
+    """Handle all other exceptions."""
+    logger.error("Unhandled exception: %s", str(exc), exc_info=True)
     problem = JSONProblem(
-        status="500",
+        status=str(const.HTTP_500_INTERNAL_SERVER_ERROR),
         title="Internal Server Error",
-        detail="An unexpected error occurred",
-        type="https://http.cat/500"
+        detail=const.ERROR_INTERNAL_SERVER,
+        type=f"https://http.cat/{const.HTTP_500_INTERNAL_SERVER_ERROR}"
     )
     return JSONResponse(
-        status_code=500,
+        status_code=const.HTTP_500_INTERNAL_SERVER_ERROR,
         content=problem.model_dump()
     )
 
 # Helper functions
 def is_prime(n: int) -> bool:
+    """Check if a number is prime.
+    
+    Args:
+        n: The number to check.
+        
+    Returns:
+        bool: True if the number is prime, False otherwise.
+    """
     if n < 2:
         return False
-    for i in range(2, int(math.sqrt(n)) + 1):
+    if n % 2 == 0:
+        return n == 2
+    
+    # Check odd divisors up to square root
+    sqrt_n = int(math.isqrt(n)) + 1
+    for i in range(3, sqrt_n, 2):
         if n % i == 0:
             return False
     return True
 
 # Root endpoint
-@app.get("/")
-async def read_root():
-    return {
-        "status": "200",
-        "data": {
+@app.get("/", response_model=APIResponse[dict[str, Any]])
+async def read_root() -> dict[str, Any]:
+    """Root endpoint that returns a welcome message and the current MOTD.
+    
+    Returns:
+        Dict containing a welcome message and the current MOTD.
+    """
+    return APIResponse[dict[str, Any]].success(
+        data={
             "Hello": "World",
             "last_motd": motd
         }
-    }
+    ).model_dump()
 
 # Block other HTTP methods on root
-@app.delete("/")
-@app.post("/")
-@app.put("/")
-async def method_not_allowed():
-    raise MethodNotAllowedError("Method not allowed")
+@app.delete("/", response_model=APIResponse[dict[str, str]])
+@app.post("/", response_model=APIResponse[dict[str, str]])
+@app.put("/", response_model=APIResponse[dict[str, str]])
+async def method_not_allowed() -> dict[str, Any]:
+    """Handle unsupported HTTP methods on the root endpoint.
+    
+    Raises:
+        MethodNotAllowedError: Always raises this error for unsupported methods.
+    """
+    raise MethodNotAllowedError(const.ERROR_METHOD_NOT_ALLOWED)
 
 # MOTD endpoints
-@app.put("/motd")
-async def update_motd(update: MOTDUpdate):
+@app.put(
+    "/motd",
+    response_model=APIResponse[dict[str, bool]],
+    status_code=status.HTTP_200_OK
+)
+async def update_motd(update: MOTDUpdate) -> dict[str, Any]:
+    """Update the Message of the Day.
+    
+    Args:
+        update: The new MOTD message.
+        
+    Returns:
+        A success response if the MOTD was updated.
+    """
     global motd
     motd = update.message
-    return {
-        "status": "200",
-        "data": {"ok": True}
-    }
+    return APIResponse[dict[str, bool]].success(
+        data={"ok": True},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
-@app.delete("/motd")
-async def delete_motd():
+@app.delete(
+    "/motd",
+    response_model=APIResponse[dict[str, bool]],
+    status_code=status.HTTP_200_OK
+)
+async def delete_motd() -> dict[str, Any]:
+    """Delete the current Message of the Day.
+    
+    Returns:
+        A success response if the MOTD was deleted.
+        
+    Raises:
+        ResourceNotFoundError: If there is no MOTD to delete.
+    """
     global motd
     if motd is None:
         raise ResourceNotFoundError("MOTD")
     motd = None
-    return {
-        "status": "200",
-        "data": {"ok": True}
-    }
+    return APIResponse[dict[str, bool]].success(
+        data={"ok": True},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
-@app.post("/motd")
-async def post_motd_not_allowed():
+@app.post(
+    "/motd",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+)
+async def post_motd_not_allowed() -> None:
+    """Handle POST requests to the MOTD endpoint.
+    
+    Raises:
+        MethodNotAllowedError: Always raises this error as POST is not allowed.
+    """
     raise MethodNotAllowedError("POST")
 
 # IP endpoint
-@app.get("/my_ip")
-async def get_my_ip(request: Request):
-    client_host = request.client.host if request.client else "unknown"
-    return {
-        "status": "200",
-        "data": {"ip": client_host}
-    }
+@app.get(
+    "/my_ip",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_200_OK
+)
+async def get_my_ip(request: Request) -> dict[str, Any]:
+    """Get the IP address of the client making the request.
+    
+    Args:
+        request: The incoming request.
+        
+    Returns:
+        A response containing the client's IP address.
+    """
+    client_host: str = request.client.host if request.client else "unknown"
+    return APIResponse[dict[str, str]].success(
+        data={"ip": client_host},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
 # Block other HTTP methods on /my_ip
-@app.delete("/my_ip")
-@app.post("/my_ip")
-@app.put("/my_ip")
-async def my_ip_method_not_allowed():
-    raise MethodNotAllowedError("Method not allowed")
+@app.delete(
+    "/my_ip",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+)
+@app.post(
+    "/my_ip",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+)
+@app.put(
+    "/my_ip",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+)
+async def my_ip_method_not_allowed() -> None:
+    """Handle unsupported HTTP methods on the /my_ip endpoint.
+    
+    Raises:
+        MethodNotAllowedError: Always raises this error for unsupported methods.
+    """
+    raise MethodNotAllowedError(const.ERROR_METHOD_NOT_ALLOWED)
 
 # Special number endpoints
-@app.post("/special_number")
-async def create_special_number(number_req: NumberRequest):
+@app.post(
+    "/special_number",
+    response_model=APIResponse[dict[str, bool]],
+    status_code=status.HTTP_201_CREATED
+)
+async def create_special_number(number_req: NumberRequest) -> dict[str, Any]:
+    """Add a new special number.
+    
+    Args:
+        number_req: The number to add.
+        
+    Returns:
+        A success response if the number was added.
+        
+    Raises:
+        ResourceExistsError: If the number is already special.
+    """
     if number_req.number in special_numbers:
         raise ResourceExistsError("Number")
     special_numbers.add(number_req.number)
-    return {
-        "status": "201",
-        "data": {"ok": True}
-    }
+    return APIResponse[dict[str, bool]].success(
+        data={"ok": True},
+        status_code=status.HTTP_201_CREATED
+    ).model_dump()
 
-@app.put("/special_number")
-async def update_special_number(number_req: NumberRequest):
+@app.put(
+    "/special_number",
+    response_model=APIResponse[dict[str, bool]],
+    responses={
+        status.HTTP_200_OK: {"description": "Number was already special"},
+        status.HTTP_201_CREATED: {"description": "Number was added to special numbers"}
+    }
+)
+async def update_special_number(number_req: NumberRequest) -> dict[str, Any]:
+    """Add or update a special number.
+    
+    Args:
+        number_req: The number to add or update.
+        
+    Returns:
+        A success response with status 200 if the number was already special,
+        or 201 if it was newly added.
+    """
     if number_req.number in special_numbers:
-        return {
-            "status": "200",
-            "data": {"ok": True}
-        }
+        return APIResponse[dict[str, bool]].success(
+            data={"ok": True},
+            status_code=status.HTTP_200_OK
+        ).model_dump()
+    
     special_numbers.add(number_req.number)
-    return {
-        "status": "201",
-        "data": {"ok": True}
-    }
+    return APIResponse[dict[str, bool]].success(
+        data={"ok": True},
+        status_code=status.HTTP_201_CREATED
+    ).model_dump()
 
-@app.delete("/special_number")
-async def delete_special_number(number_req: NumberRequest):
+@app.delete(
+    "/special_number",
+    response_model=APIResponse[dict[str, bool]],
+    status_code=status.HTTP_200_OK
+)
+async def delete_special_number(number_req: NumberRequest) -> dict[str, Any]:
+    """Remove a number from the special numbers set.
+    
+    Args:
+        number_req: The number to remove.
+        
+    Returns:
+        A success response if the number was removed.
+        
+    Raises:
+        ResourceNotFoundError: If the number was not special.
+    """
     if number_req.number not in special_numbers:
         raise ResourceNotFoundError("Number")
     special_numbers.remove(number_req.number)
-    return {
-        "status": "200",
-        "data": {"ok": True}
-    }
+    return APIResponse[dict[str, bool]].success(
+        data={"ok": True},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
-@app.get("/special_number")
-async def check_special_number(number: int):
+@app.get(
+    "/special_number",
+    response_model=APIResponse[dict[str, bool]],
+    status_code=status.HTTP_200_OK
+)
+async def check_special_number(number: int) -> dict[str, Any]:
+    """Check if a number is special.
+    
+    Args:
+        number: The number to check.
+        
+    Returns:
+        A success response if the number is special.
+        
+    Raises:
+        ResourceNotFoundError: If the number is not special.
+    """
     if number not in special_numbers:
         raise ResourceNotFoundError("Number")
-    return {
-        "status": "200",
-        "data": {"ok": True}
-    }
+    return APIResponse[dict[str, bool]].success(
+        data={"ok": True},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
 # Prime number endpoints
-@app.post("/is_prime")
-async def check_prime(prime_req: PrimeCheckRequest):
-    if prime_req.number > 1000:
-        raise NumberTooLargeError("Number is too large for current payment plan. Do you think electricity is free?")
-    
-    return {
-        "status": "200",
-        "data": {"is_prime": is_prime(prime_req.number)}
+@app.post(
+    "/is_prime",
+    response_model=APIResponse[dict[str, bool]],
+    status_code=status.HTTP_200_OK,
+    responses={
+        status.HTTP_402_PAYMENT_REQUIRED: {
+            "description": "Number is too large for current payment plan"
+        },
+        status.HTTP_422_UNPROCESSABLE_ENTITY: {
+            "description": "Invalid number provided"
+        }
     }
+)
+async def check_prime(prime_req: PrimeCheckRequest) -> dict[str, Any]:
+    """Check if a number is prime.
+    
+    Args:
+        prime_req: The number to check.
+        
+    Returns:
+        A response indicating if the number is prime.
+        
+    Raises:
+        NumberTooLargeError: If the number is too large to check.
+    """
+    return APIResponse[dict[str, bool]].success(
+        data={"is_prime": is_prime(prime_req.number)},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
 # Block other HTTP methods on /is_prime
-@app.get("/is_prime")
-async def get_prime_not_allowed():
+@app.get(
+    "/is_prime",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+)
+async def get_prime_not_allowed() -> None:
+    """Handle GET requests to the /is_prime endpoint.
+    
+    Raises:
+        MethodNotAllowedError: Always raises this error as GET is not allowed.
+    """
     raise MethodNotAllowedError("GET")
 
-@app.put("/is_prime")
-async def put_prime_not_implemented():
-    return JSONResponse(
-        status_code=501,
-        content={
-            "status": "501",
-            "title": "Not Implemented",
-            "detail": "Not implemented, I am sure I can make any number you want a prime number, but this HTTP response body is too small...",
-            "type": "https://http.cat/501"
+@app.put(
+    "/is_prime",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_501_NOT_IMPLEMENTED
+)
+async def put_prime_not_implemented() -> dict[str, Any]:
+    """Handle PUT requests to the /is_prime endpoint.
+    
+    Returns:
+        A response indicating that the operation is not implemented.
+    """
+    return APIResponse[dict[str, str]](
+        status=str(status.HTTP_501_NOT_IMPLEMENTED),
+        data={
+            "error": (
+                "Not implemented, I am sure I can make any number you want a prime number, "
+                "but this HTTP response body is too small..."
+            )
         }
-    )
+    ).model_dump()
 
-@app.delete("/is_prime")
-async def delete_prime_not_implemented():
-    return JSONResponse(
-        status_code=501,
-        content={
-            "status": "501",
-            "title": "Not Implemented",
-            "detail": "Not implemented, I am sure I can stop any number you want from being a prime number, but this HTTP response body is too small...",
-            "type": "https://http.cat/501"
+@app.delete(
+    "/is_prime",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_501_NOT_IMPLEMENTED
+)
+async def delete_prime_not_implemented() -> dict[str, Any]:
+    """Handle DELETE requests to the /is_prime endpoint.
+    
+    Returns:
+        A response indicating that the operation is not implemented.
+    """
+    return APIResponse[dict[str, str]](
+        status=str(status.HTTP_501_NOT_IMPLEMENTED),
+        data={
+            "error": (
+                "Not implemented, I am sure I can stop any number you want from being a prime number, "
+                "but this HTTP response body is too small..."
+            )
         }
-    )
+    ).model_dump()
 
 # Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {"status": "200", "data": {"status": "healthy"}}
+@app.get(
+    "/health",
+    response_model=APIResponse[dict[str, str]],
+    status_code=status.HTTP_200_OK
+)
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint.
+    
+    Returns:
+        A response indicating the service is healthy.
+    """
+    return APIResponse[dict[str, str]].success(
+        data={"status": "healthy"},
+        status_code=status.HTTP_200_OK
+    ).model_dump()
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("src.practice02.main:app", host="0.0.0.0", port=3500, reload=True)
+    uvicorn.run(
+        "src.practice02.main:app",
+        host=const.DEFAULT_HOST,
+        port=const.DEFAULT_PORT,
+        reload=True
+    )
