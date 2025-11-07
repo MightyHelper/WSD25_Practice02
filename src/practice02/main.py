@@ -207,26 +207,35 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware for rate limiting requests."""
-    
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Process the request with rate limiting."""
         client_ip: str = request.client.host if request.client else "unknown"
         current_time: float = time.time()
-        
+
         # Clean up old blacklisted IPs
         self._cleanup_blacklisted_ips(current_time)
-        
+
+        if not self._should_apply_rate_limit(request):
+            return await call_next(request)
+
+
         # Check if IP is blacklisted
         if client_ip in blacklisted_ips:
             return self._blacklisted_response()
-        
+
         # Initialize request timestamps for this IP
         if client_ip not in request_timestamps:
             request_timestamps[client_ip] = []
-        
+
         # Process rate limiting
         response = await self._process_rate_limit(client_ip, current_time, request, call_next)
         return response
+
+    @staticmethod
+    def _should_apply_rate_limit(request: Request) -> bool:
+        """Determine if rate limiting should be applied to the request."""
+        return request.url.path in ["/redoc", "/docs"]
     
     @staticmethod
     def _cleanup_blacklisted_ips(current_time: float) -> None:
@@ -468,7 +477,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
 
     # Root endpoint
     @app.get("/", response_model=APIResponse[dict[str, Any]])
-    async def read_root() -> dict[str, Any]:
+    async def motd_get() -> dict[str, Any]:
         """Root endpoint that returns a welcome message and the current MOTD.
 
         Returns:
@@ -482,9 +491,9 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         ).model_dump()
 
     # Block other HTTP methods on root
-    @app.delete("/", response_model=APIResponse[dict[str, str]])
-    @app.post("/", response_model=APIResponse[dict[str, str]])
-    @app.put("/", response_model=APIResponse[dict[str, str]])
+    @app.delete("/", response_model=APIResponse[dict[str, str]], include_in_schema=False)
+    @app.post("/", response_model=APIResponse[dict[str, str]], include_in_schema=False)
+    @app.put("/", response_model=APIResponse[dict[str, str]], include_in_schema=False)
     async def method_not_allowed() -> dict[str, Any]:
         """Handle unsupported HTTP methods on the root endpoint.
 
@@ -499,7 +508,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         response_model=APIResponse[dict[str, bool]],
         status_code=status.HTTP_200_OK
     )
-    async def update_motd(update: MOTDUpdate) -> dict[str, Any]:
+    async def motd_put(update: MOTDUpdate) -> dict[str, Any]:
         """Update the Message of the Day.
 
         Args:
@@ -520,7 +529,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         response_model=APIResponse[dict[str, bool]],
         status_code=status.HTTP_200_OK
     )
-    async def delete_motd() -> dict[str, Any]:
+    async def motd_delete() -> dict[str, Any]:
         """Delete the current Message of the Day.
 
         Returns:
@@ -541,7 +550,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
     @app.post(
         "/motd",
         response_model=APIResponse[dict[str, str]],
-        status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        include_in_schema=False
     )
     async def post_motd_not_allowed() -> None:
         """Handle POST requests to the MOTD endpoint.
@@ -557,7 +567,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         response_model=APIResponse[dict[str, str]],
         status_code=status.HTTP_200_OK
     )
-    async def get_my_ip(request: Request) -> dict[str, Any]:
+    async def ip_get(request: Request) -> dict[str, Any]:
         """Get the IP address of the client making the request.
 
         Args:
@@ -586,7 +596,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
     @app.put(
         "/my_ip",
         response_model=APIResponse[dict[str, str]],
-        status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        include_in_schema=False
     )
     async def my_ip_method_not_allowed() -> None:
         """Handle unsupported HTTP methods on the /my_ip endpoint.
@@ -602,7 +613,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         response_model=APIResponse[dict[str, bool]],
         status_code=status.HTTP_201_CREATED
     )
-    async def create_special_number(number_req: NumberRequest, response: Response) -> dict[str, Any]:
+    async def special_number_create(number_req: NumberRequest, response: Response) -> dict[str, Any]:
         """Add a new special number.
 
         Args:
@@ -632,7 +643,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
             status.HTTP_201_CREATED: {"description": "Number was added to special numbers"}
         }
     )
-    async def update_special_number(number_req: NumberRequest, response: Response) -> dict[str, Any]:
+    async def special_number_update(number_req: NumberRequest, response: Response) -> dict[str, Any]:
         """Add or update a special number.
 
         Args:
@@ -661,7 +672,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         response_model=APIResponse[dict[str, bool]],
         status_code=status.HTTP_200_OK
     )
-    async def delete_special_number(number_req: NumberRequest) -> dict[str, Any]:
+    async def special_number_delete(number_req: NumberRequest) -> dict[str, Any]:
         """Remove a number from the special numbers set.
 
         Args:
@@ -686,7 +697,7 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         response_model=APIResponse[dict[str, bool]],
         status_code=status.HTTP_200_OK
     )
-    async def check_special_number(number: int) -> dict[str, Any]:
+    async def special_number_get(number: int) -> dict[str, Any]:
         """Check if a number is special.
 
         Args:
@@ -740,7 +751,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
     @app.get(
         "/is_prime",
         response_model=APIResponse[dict[str, str]],
-        status_code=status.HTTP_405_METHOD_NOT_ALLOWED
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        include_in_schema=False
     )
     async def get_prime_not_allowed() -> None:
         """Handle GET requests to the /is_prime endpoint.
@@ -753,7 +765,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
     @app.put(
         "/is_prime",
         response_model=APIResponse[dict[str, str]],
-        status_code=status.HTTP_501_NOT_IMPLEMENTED
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        include_in_schema=False
     )
     async def put_prime_not_implemented() -> dict[str, Any]:
         """Handle PUT requests to the /is_prime endpoint.
@@ -774,7 +787,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
     @app.delete(
         "/is_prime",
         response_model=APIResponse[dict[str, str]],
-        status_code=status.HTTP_501_NOT_IMPLEMENTED
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        include_in_schema=False
     )
     async def delete_prime_not_implemented() -> dict[str, Any]:
         """Handle DELETE requests to the /is_prime endpoint.
