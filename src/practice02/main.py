@@ -29,75 +29,18 @@ logging.basicConfig(
 logger: logging.Logger = logging.getLogger(__name__)
 
 # Custom exceptions
+from .errors import (
+    APIError,
+    NumberTooLargeError,
+    NumberNotIntegerError,
+    ResourceExistsError,
+    ResourceNotFoundError,
+    MethodNotAllowedError,
+    RateLimitExceededError,
+    EnhanceYourCalmError,
+    TeapotError,
+)
 
-class APIError(Exception):
-    """Base class for API errors."""
-    status_code: int
-    title: str
-    detail: str
-    
-    def __init__(self, status_code: int, title: str, detail: str) -> None:
-        self.status_code = status_code
-        self.title = title
-        self.detail = detail
-        super().__init__(detail)
-
-class NumberTooLargeError(APIError):
-    """Raised when a number exceeds the allowed limit."""
-    def __init__(self, detail: str = const.ERROR_NUMBER_TOO_LARGE) -> None:
-        super().__init__(const.HTTP_402_PAYMENT_REQUIRED, "Payment Required", detail)
-
-class NumberNotIntegerError(APIError):
-    """Raised when a non-integer value is provided where an integer is expected."""
-    def __init__(self, detail: str = const.ERROR_VALIDATION) -> None:
-        super().__init__(const.HTTP_422_UNPROCESSABLE_CONTENT, "Unprocessable Entity", detail)
-
-class ResourceExistsError(APIError):
-    """Raised when trying to create a resource that already exists."""
-    def __init__(self, resource: str) -> None:
-        super().__init__(const.HTTP_409_CONFLICT, "Conflict", f"{resource} already exists")
-
-class ResourceNotFoundError(APIError):
-    """Raised when a requested resource is not found."""
-    def __init__(self, resource: str) -> None:
-        super().__init__(const.HTTP_404_NOT_FOUND, "Not Found", f"{resource} not found")
-
-class MethodNotAllowedError(APIError):
-    """Raised when an unsupported HTTP method is used."""
-    def __init__(self, method: str) -> None:
-        super().__init__(
-            const.HTTP_405_METHOD_NOT_ALLOWED, 
-            "Method Not Allowed", 
-            f"{method} method not allowed"
-        )
-
-class RateLimitExceededError(APIError):
-    """Raised when the rate limit is exceeded."""
-    def __init__(self, retry_after: int) -> None:
-        super().__init__(
-            const.HTTP_429_TOO_MANY_REQUESTS,
-            "Too Many Requests",
-            const.ERROR_RATE_LIMIT_EXCEEDED
-        )
-        self.retry_after = retry_after
-
-class EnhanceYourCalmError(APIError):
-    """Raised when requests are coming in too quickly."""
-    def __init__(self) -> None:
-        super().__init__(
-            const.HTTP_420_ENHANCE_YOUR_CALM,
-            "Enhance Your Calm",
-            "You are being rate limited"
-        )
-
-class TeapotError(APIError):
-    """Raised when an IP is blacklisted."""
-    def __init__(self) -> None:
-        super().__init__(
-            const.HTTP_418_IM_A_TEAPOT,
-            "I'm a teapot",
-            const.ERROR_BLACKLISTED_IP
-        )
 
 # Response Models
 
@@ -105,12 +48,12 @@ class APIResponse[T](BaseModel):
     """Standard API response format."""
     status: str
     data: T
-    
+
     @classmethod
     def success(cls, data: T, status_code: int = const.HTTP_200_OK) -> Self:
         """Create a successful API response."""
         return cls(status=str(status_code), data=data)
-    
+
     @classmethod
     def error(cls, error: APIError) -> Self:
         """Create an error API response."""
@@ -119,6 +62,7 @@ class APIResponse[T](BaseModel):
             data={"error": error.detail}
         )
 
+
 class JSONProblem(BaseModel):
     """Standard error response format following RFC 7807."""
     status: str
@@ -126,7 +70,7 @@ class JSONProblem(BaseModel):
     detail: str
     detail_obj: Any
     type: str = "about:blank"
-    
+
     @classmethod
     def from_exception(cls, exc: Exception) -> 'JSONProblem':
         """Create a JSON problem from an exception."""
@@ -146,6 +90,7 @@ class JSONProblem(BaseModel):
             type="https://http.cat/500"
         )
 
+
 # Request Models
 class MOTDUpdate(BaseModel):
     """Model for updating the Message of the Day."""
@@ -156,10 +101,11 @@ class MOTDUpdate(BaseModel):
         description="The message to display as the Message of the Day"
     )
 
+
 class NumberRequest(BaseModel):
     """Base model for number-based requests."""
     number: int = Field(..., gt=0, description="A positive integer")
-    
+
     @field_validator('number')
     @classmethod
     def validate_number(cls, v: int) -> int:
@@ -168,9 +114,10 @@ class NumberRequest(BaseModel):
             raise ValueError('Number must be positive')
         return v
 
+
 class PrimeCheckRequest(NumberRequest):
     """Model for prime number check requests."""
-    
+
     @field_validator('number')
     @classmethod
     def validate_number_size(cls, v: int) -> int:
@@ -179,15 +126,16 @@ class PrimeCheckRequest(NumberRequest):
             raise NumberTooLargeError()
         return v
 
+
 # Middleware
 class LoggingMiddleware(BaseHTTPMiddleware):
     """Middleware for logging HTTP requests and responses."""
-    
+
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Process the request and log relevant information."""
         client_host: str = request.client.host if request.client else "unknown"
         logger.info("%s - %s %s", client_host, request.method, request.url.path)
-        
+
         start_time: float = time.time()
         try:
             response: Response = await call_next(request)
@@ -205,6 +153,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             logger.error("Error processing request: %s", str(e), exc_info=True)
             raise
 
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware for rate limiting requests."""
 
@@ -218,7 +167,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not self._should_apply_rate_limit(request):
             return await call_next(request)
-
 
         # Check if IP is blacklisted
         if client_ip in blacklisted_ips:
@@ -236,7 +184,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _should_apply_rate_limit(request: Request) -> bool:
         """Determine if rate limiting should be applied to the request."""
         return request.url.path in ["/redoc", "/docs"]
-    
+
     @staticmethod
     def _cleanup_blacklisted_ips(current_time: float) -> None:
         """Remove expired IPs from the blacklist."""
@@ -246,7 +194,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         ]
         for ip in expired_ips:
             del blacklisted_ips[ip]
-    
+
     @staticmethod
     def _blacklisted_response() -> JSONResponse:
         """Create a response for blacklisted IPs."""
@@ -260,29 +208,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 type=f"https://http.cat/{const.HTTP_418_IM_A_TEAPOT}"
             ).model_dump()
         )
-    
+
     async def _process_rate_limit(
-        self,
-        client_ip: str,
-        current_time: float,
-        request: Request,
-        call_next: Callable
+            self,
+            client_ip: str,
+            current_time: float,
+            request: Request,
+            call_next: Callable
     ) -> Response:
         """Process rate limiting for the request."""
         timestamps = request_timestamps[client_ip]
         window_start = current_time - const.RATE_LIMIT_WINDOW_SECONDS
-        
+
         # Remove old timestamps outside the current window
         recent_timestamps = [ts for ts in timestamps if ts > window_start]
-        
+
         # Check for too many requests
         if len(recent_timestamps) >= const.RATE_LIMIT_MAX_REQUESTS:
             return self._handle_rate_limit_exceeded(client_ip, current_time)
-        
+
         # Check for too frequent requests
         if self._is_too_frequent(recent_timestamps, current_time):
             return self._enhance_your_calm_response()
-        
+
         # Check standard rate limit
         if recent_timestamps:
             response = self._check_standard_rate_limit(
@@ -291,21 +239,21 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
             if response:
                 return response
-        
+
         # Update timestamps and process the request
         recent_timestamps.append(current_time)
         request_timestamps[client_ip] = recent_timestamps[-const.MAX_TIMESTAMPS_STORED:]
-        
+
         return await call_next(request)
-    
+
     @staticmethod
     def _is_too_frequent(timestamps: list[float], current_time: float) -> bool:
         """Check if requests are coming in too quickly."""
         return (
-            len(timestamps) > 0 and
-            (current_time - timestamps[-1]) < const.RATE_LIMIT_MIN_INTERVAL
+                len(timestamps) > 0 and
+                (current_time - timestamps[-1]) < const.RATE_LIMIT_MIN_INTERVAL
         )
-    
+
     @staticmethod
     def _enhance_your_calm_response() -> JSONResponse:
         """Create a 420 Enhance Your Calm response."""
@@ -319,11 +267,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 type=f"https://http.cat/{const.HTTP_420_ENHANCE_YOUR_CALM}"
             ).model_dump()
         )
-    
+
     @staticmethod
     def _handle_rate_limit_exceeded(
             client_ip: str,
-        current_time: float
+            current_time: float
     ) -> JSONResponse:
         """Handle rate limit exceeded by blacklisting the IP."""
         blacklisted_ips[client_ip] = current_time + const.BLACKLIST_DURATION
@@ -344,15 +292,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 type=f"https://http.cat/{const.HTTP_429_TOO_MANY_REQUESTS}"
             ).model_dump()
         )
-    
+
     @staticmethod
     def _check_standard_rate_limit(
             first_timestamp: float,
-        current_time: float
+            current_time: float
     ) -> Optional[JSONResponse]:
         """Check standard rate limit (1 request per second)."""
         time_since_first = current_time - first_timestamp
-        
+
         if time_since_first < const.RATE_LIMIT_WINDOW_SECONDS:
             retry_after = int(const.RATE_LIMIT_WINDOW_SECONDS - time_since_first) + 1
             return JSONResponse(
@@ -371,6 +319,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 ).model_dump()
             )
         return None
+
 
 # Helper functions
 def is_prime(n: int) -> bool:
@@ -394,6 +343,7 @@ def is_prime(n: int) -> bool:
             return False
     return True
 
+
 def create_app(enable_rate_limiting: bool = True) -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
@@ -403,12 +353,12 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc"
     )
-    
+
     # Add middleware
     app.add_middleware(LoggingMiddleware)
     if enable_rate_limiting:
         app.add_middleware(RateLimitMiddleware)
-    
+
     # Exception handlers
     @app.exception_handler(APIError)
     async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
@@ -421,8 +371,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
 
     @app.exception_handler(HTTPException)
     async def http_exception_handler(
-        request: Request,
-        exc: HTTPException
+            request: Request,
+            exc: HTTPException
     ) -> JSONResponse:
         """Handle HTTP exceptions."""
         problem = JSONProblem(
@@ -439,8 +389,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error_handler(
-        request: Request,
-        exc: RequestValidationError
+            request: Request,
+            exc: RequestValidationError
     ) -> JSONResponse:
         """Handle request validation errors."""
         problem = JSONProblem(
@@ -457,8 +407,8 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def global_exception_handler(
-        request: Request,
-        exc: Exception
+            request: Request,
+            exc: Exception
     ) -> JSONResponse:
         """Handle all other exceptions."""
         logger.error("Unhandled exception: %s", str(exc), exc_info=True)
@@ -473,7 +423,6 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
             status_code=const.HTTP_500_INTERNAL_SERVER_ERROR,
             content=problem.model_dump()
         )
-
 
     # Root endpoint
     @app.get("/", response_model=APIResponse[dict[str, Any]])
@@ -822,7 +771,9 @@ def create_app(enable_rate_limiting: bool = True) -> FastAPI:
             data={"status": "healthy"},
             status_code=status.HTTP_200_OK
         ).model_dump()
+
     return app
+
 
 real_app = create_app()
 
