@@ -781,7 +781,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "practice02.main:real_app",
+        "src.practice02.main:real_app",
         host=const.DEFAULT_HOST,
         port=const.DEFAULT_PORT,
         reload=True

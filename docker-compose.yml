@@ -1,0 +1,8 @@
+services:
+  app:
+    build:
+      context: .
+    container_name: practice02-app
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
