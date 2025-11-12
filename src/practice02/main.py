@@ -1,7 +1,7 @@
 import logging
 import math
 import time
-from typing import Any, Callable, Optional, Self
+from typing import Any, Callable, Optional, Self, Awaitable
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -55,11 +55,11 @@ class APIResponse[T](BaseModel):
         return cls(status=str(status_code), data=data)
 
     @classmethod
-    def error(cls, error: APIError) -> Self:
+    def error(cls, error: APIError) -> 'APIResponse[dict[str, APIError]]':
         """Create an error API response."""
-        return cls(
+        return cls(  # type: ignore
             status=str(error.status_code),
-            data={"error": error.detail}
+            data={"error": error.detail}  # type: ignore
         )
 
 
@@ -131,7 +131,7 @@ class PrimeCheckRequest(NumberRequest):
 class LoggingMiddleware(BaseHTTPMiddleware):
     """Middleware for logging HTTP requests and responses."""
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         """Process the request and log relevant information."""
         client_host: str = request.client.host if request.client else "unknown"
         logger.info("%s - %s %s", client_host, request.method, request.url.path)
@@ -157,7 +157,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Middleware for rate limiting requests."""
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+    async def dispatch(self, request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         """Process the request with rate limiting."""
         client_ip: str = request.client.host if request.client else "unknown"
         current_time: float = time.time()
@@ -214,7 +214,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             client_ip: str,
             current_time: float,
             request: Request,
-            call_next: Callable
+            call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         """Process rate limiting for the request."""
         timestamps = request_timestamps[client_ip]
@@ -781,7 +781,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "src.practice02.main:real_app",
+        "practice02.main:real_app",
         host=const.DEFAULT_HOST,
         port=const.DEFAULT_PORT,
         reload=True

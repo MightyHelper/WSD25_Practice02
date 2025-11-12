@@ -4,7 +4,7 @@ from collections.abc import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from src.practice02.main import create_app
+from practice02.main import create_app
 
 @pytest.fixture(scope="module")
 def test_app() -> Generator[TestClient, None]:
