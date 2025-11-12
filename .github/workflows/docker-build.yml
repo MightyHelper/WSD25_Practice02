@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write # Grant write permission to packages
+      contents: read
 
     steps:
       - uses: actions/checkout@v4.1.3
@@ -19,6 +20,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/wsd-25-practice02:python-latest
+          tags: ghcr.io/${{ github.repository_owner }}/wsd25-practice02:python-latest
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
