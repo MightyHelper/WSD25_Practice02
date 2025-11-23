@@ -33,12 +33,16 @@ Just [docker](https://docs.docker.com/get-started/get-docker/).
 
 ### Execution
 To pull a pre-built image use
-```bash
+```sh
+docker run -p 8000:8000 ghcr.io/mightyhelper/wsd25_practice02:latest
+```
+Or with docker compose:
+```sh
 docker-compose up
 ```
 
 To build the image locally use
-```bash
+```sh
 docker-compose up --build
 ```
 
@@ -52,18 +56,18 @@ The API will be available at `http://localhost:8000`
 Just UV or pip/python3.13.
 
 1. Clone the repository:
-   ```bash
+   ```sh
    git clone git@github.com:MightyHelper/WSD25_Practice02.git
    cd Practice02-Python
    ```
 
 2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already:
-   ```bash
+   ```sh
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
 3. Create a virtual environment with uv, automatically install dependencies from `pyproject.toml`, and then run the application:
-   ```bash
+   ```sh
    uv run fastapi run src/practice02/main.py
    ```
 
@@ -100,6 +104,6 @@ The API returns standardized error responses in the following format:
 
 Run the test suite with tox:
 
-```bash
+```sh
 uv run tox p
 ```
