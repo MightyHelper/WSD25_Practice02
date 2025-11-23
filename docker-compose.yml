@@ -2,6 +2,7 @@ services:
   app:
     build:
       context: .
+    image: ghcr.io/mightyhelper/wsd25_practice02:latest
     container_name: practice02-app
     ports:
       - "8000:8000"

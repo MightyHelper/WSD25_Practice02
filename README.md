@@ -1,75 +1,105 @@
-POST, GET, PUT, DELETE
-Implement Middleware
-Use Various HTTP Response Codes
-Use at least two responses each from 2xx, 4xx, and 5xx categories
-Follow the standardized format presented in the lecture slides
+# Practice 02 - Web Services Development
 
-We will have a Generic base class called APIResponse (Pydantic model) which will wrap responses our API gives adding some fields:
-  {"status": "<status code>", "data": <the data>}
-We will have a ProblemResponse (Pydantic model) which will wrap error responses our API gives adding some fields:
-  {"status": "<status code>", "title": "<title>", "detail": "<detail>", "type": "<type>"}
-We should also have a reference to the image of the HTTP status using http.cat
-I.E.: https://http.cat/status/{status_code}
+A FastAPI-based web service with number management capabilities, featuring rate limiting, request validation, and error handling.
 
-GET / => 200: {"Hello": "World", "last_motd": "<MOTD>"}
-DELETE / => 405: {"error": "Method not allowed"}
-POST / => 405: {"error": "Method not allowed"}
-PUT / => 405: {"error": "Method not allowed"}
-PUT /motd {"message": "<your message>"}
-  200: {"ok": true}
-  422: {"error": "Message is too long"} [If message > 100]
-  500: {"error": "OOM"}
-DELETE /motd {"message": "<your message>"}
-  200: {"ok": true}
-  404: {"error": "MOTD was not set"}
-POST /motd => 405: {"error": "Method not allowed"}
+## Features
+
+- **Number Management**
+  - Check if a number is prime
+  - Add/remove special numbers
+  - List all special numbers
+  - Get number statistics
+
+- **API Features**
+  - RESTful endpoints with proper HTTP status codes
+  - Request validation using Pydantic models
+  - Comprehensive error handling
+  - Rate limiting and IP blacklisting
+  - Request logging middleware
+  - Support for both JSON and form data
+
+- **Security**
+  - Rate limiting (1 request per second by default)
+  - IP-based blacklisting for abusive clients
+  - Input validation and sanitization
+  - Secure defaults and configurations
+
+- **Other Easter eggs**
+
+## Running With Docker
+### Prerequisites
+
+Just [docker](https://docs.docker.com/get-started/get-docker/).
+
+### Execution
+To pull a pre-built image use
+```bash
+docker-compose up
+```
+
+To build the image locally use
+```bash
+docker-compose up --build
+```
+
+The API will be available at `http://localhost:8000`
 
 
+## Running Locally
 
-GET /my_ip => 200: {"ip": "<your ip address>"}
-DELETE /my_ip => 405: {"error": "Method not allowed"}
-POST /my_ip => 405: {"error": "Method not allowed"}
-PUT /my_ip => 405: {"error": "Method not allowed"}
+### Prerequisites
+
+Just UV or pip/python3.13.
+
+1. Clone the repository:
+   ```bash
+   git clone git@github.com:MightyHelper/WSD25_Practice02.git
+   cd Practice02-Python
+   ```
+
+2. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already:
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. Create a virtual environment with uv, automatically install dependencies from `pyproject.toml`, and then run the application:
+   ```bash
+   uv run fastapi run src/practice02/main.py
+   ```
+
+If you are not using UV, you may optionally create a virtual environment, and install packages with `pip install .`
+
+From inside the environment you may run `fastapi run src/practice02/main.py`
 
 
-POST /special_number {"number": <your number>}
-  201: {"ok": true}
-  409: {"error": "Number is already special"}
-  422: {"error": "Number is not an integer"}
-  500: {"error": "OOM"}
-PUT /special_number {"number": <your number>}
-  200: {"ok": true}
-  201: {"ok": true} [If the number wasn't special yet]
-  422: {"error": "Number is not an integer"}
-  500: {"error": "OOM"}
-DELETE /special_number {"number": <your number>}
-  200: {"ok": true}
-  404: {"error": "Number was not special"}
-GET /special_number {"number": <your number>}
-  200: {"ok": true}
-  404: {"error": "Number was not special"}
+## Documentation Endpoints
 
-POST /is_prime {"number": <your number>}
-  200: {"is_prime": true / false}
-  402: {"error": "Number is too large for current payment plan. Do you think electricity is free?"} [If number > 1000]
-  422: {"error": "Number is not an integer"}
-GET /is_prime {"number": <your number>} => 405: {"error": "Method not allowed"}
-PUT /is_prime {"number": <your number>} => 501: {"error": "Not implemented, I am sure I can make any number you want a prime number, but this HTTP response body is too small..."}
-DELETE /is_prime {"number": <your number>} => 501: {"error": "Not implemented, I am sure I can stop any number you want from being a prime number, but this HTTP response body is too small..."}
+Check `/redoc` or `/docs` for a list of endpoints.
 
-Middleware 1: Logging - log in the following format:
-[UTC Timestamp] [logger] [level] [request source ip if applicable] - [message]
+## Rate Limiting
 
-Middleware 2: Error handling - catch all exceptions and generate some info
-Create a JSONProblem pydantic model that will be used to generate the error responses
-Create a custom HTTPException class that contains the right status code and message
-Add an abstract .content(request) method that will return a JSONProblem pydantic model
-Implement a custom exception handler that will catch all exceptions and return a JSONProblem pydantic model
-If the exception is part of our HTTPException tree it should return the right exception code and content.
-If the exception is not part of our HTTPException tree it should return 500 and a generic error message. While logging more details to the error log
+The API implements rate limiting with the following rules:
+- 1 request per second per IP address
+- IPs exceeding the limit are temporarily blacklisted
+- Blacklisted IPs receive a 429 Too Many Requests response
 
-Middleware 3: Rate limiting - we admit up to 1 request per 1 seconds per source ip.
-If this is exceeded, we respond with HTTP 429 with an appropriate retry-after and a JSONProblem pydantic model
-If the last request by this IP was less than 0.1 seconds ago we instead send an HTTP 420.
-If the same IP sends more than 100 requests in a second it is blacklisted for 10 seconds.
-All requests to blacklisted IPs are responded to with HTTP 418
+## Error Handling
+
+The API returns standardized error responses in the following format:
+
+```json
+{
+  "status": "error",
+  "code": 404,
+  "message": "Resource not found",
+  "details": "The requested resource was not found"
+}
+```
+
+## Testing
+
+Run the test suite with tox:
+
+```bash
+uv run tox p
+```
