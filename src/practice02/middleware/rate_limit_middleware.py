@@ -1,7 +1,7 @@
 import logging
 import time
 from http import HTTPStatus
-from typing import Callable, Awaitable, Optional
+from typing import Callable, Awaitable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
